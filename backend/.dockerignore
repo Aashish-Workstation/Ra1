@@ -1,0 +1,11 @@
+.git
+__pycache__
+*.pyc
+*.pyo
+.env
+.gitignore
+README.md
+*.md
+dist
+build
+*.egg-info
