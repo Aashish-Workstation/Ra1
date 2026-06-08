@@ -252,3 +252,25 @@ def calculate_model_score(
         score -= (latency_ms - median_latency_ms) / 100
 
     return round(score, 2)
+
+
+async def make_model_reader(pool):
+    """Create a callable that reads all models from model_catalog table."""
+    async def _read() -> list[dict]:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT model_id, provider, status, credential_ref
+                FROM model_catalog
+                """
+            )
+            return [
+                {
+                    "model_id": r["model_id"],
+                    "provider": r["provider"],
+                    "status": r["status"],
+                    "credential_ref": r["credential_ref"],
+                }
+                for r in rows
+            ]
+    return _read

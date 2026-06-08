@@ -99,3 +99,40 @@ async def update_models_for_provider(provider_id: str, api_key: str) -> dict[str
 def get_litellm_prefix(provider_id: str) -> str:
     """Return the LiteLLM model prefix for a given provider ID."""
     return PROVIDER_PREFIX_MAP.get(provider_id.lower(), f"{provider_id}/")
+
+
+async def execute_chat_completion(model_id: str, api_key: str | None, prompt: str) -> str:
+    """Execute a chat completion via LiteLLM proxy.
+    
+    Args:
+        model_id: The model identifier (e.g., 'gpt-4o')
+        api_key: Optional provider API key for BYOK
+        prompt: The user prompt to send
+        
+    Returns:
+        The response content string
+        
+    Raises:
+        Exception with status_code attribute on error for fallback handling
+    """
+    headers = _auth_headers()
+    if api_key:
+        headers["X-Provider-Api-Key"] = api_key
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(
+            f"{LITELLM_URL}/chat/completions",
+            headers=headers,
+            json={
+                "model": model_id,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+        )
+        
+        if response.status_code >= 400:
+            exc = Exception(f"LiteLLM error: {response.status_code}")
+            exc.status_code = response.status_code
+            raise exc
+            
+        body = response.json()
+        return body["choices"][0]["message"]["content"]

@@ -364,3 +364,136 @@ def _short_hash(value: str) -> str:
     """
     import hashlib
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
+
+
+# ── DB sinks ──────────────────────────────────────────────────────────────────
+
+
+async def make_vault_row_writer(pool, atrs: ATRSService):
+    async def _write(row: VaultEntry) -> None:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO vault_entries (
+                    vault_id, owner_id, credential_type, encrypted_value,
+                    connector_ref, label, status, expires_at,
+                    refresh_token_encrypted, refresh_status, last_used_at,
+                    created_at, updated_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                """,
+                row.vault_id,
+                row.owner_id,
+                row.credential_type.value,
+                row.encrypted_value,
+                row.connector_ref,
+                row.label,
+                row.status.value,
+                row.expires_at,
+                row.refresh_token,
+                row.refresh_status.value,
+                row.last_used_at,
+                row.created_at,
+                row.updated_at,
+            )
+    return _write
+
+
+async def make_vault_row_reader(pool):
+    async def _read(owner_id: str, vault_id: uuid.UUID) -> Optional[VaultEntry]:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT vault_id, owner_id, credential_type, encrypted_value,
+                       connector_ref, label, status, expires_at,
+                       refresh_token_encrypted, refresh_status, last_used_at,
+                       created_at, updated_at
+                FROM vault_entries
+                WHERE owner_id = $1 AND vault_id = $2
+                """,
+                owner_id, vault_id,
+            )
+            if row is None:
+                return None
+            return VaultEntry(
+                vault_id=row["vault_id"],
+                owner_id=row["owner_id"],
+                credential_type=CredentialType(row["credential_type"]),
+                encrypted_value=row["encrypted_value"],
+                connector_ref=row["connector_ref"],
+                label=row["label"],
+                status=VaultStatus(row["status"]),
+                expires_at=row["expires_at"],
+                refresh_token=row["refresh_token_encrypted"],
+                refresh_status=RefreshStatus(row["refresh_status"]),
+                last_used_at=row["last_used_at"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+            )
+    return _read
+
+
+async def make_vault_lister(pool):
+    async def _list(owner_id: str) -> list[VaultEntry]:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT vault_id, owner_id, credential_type, encrypted_value,
+                       connector_ref, label, status, expires_at,
+                       refresh_token_encrypted, refresh_status, last_used_at,
+                       created_at, updated_at
+                FROM vault_entries
+                WHERE owner_id = $1
+                """,
+                owner_id,
+            )
+            return [
+                VaultEntry(
+                    vault_id=r["vault_id"],
+                    owner_id=r["owner_id"],
+                    credential_type=CredentialType(r["credential_type"]),
+                    encrypted_value=r["encrypted_value"],
+                    connector_ref=r["connector_ref"],
+                    label=r["label"],
+                    status=VaultStatus(r["status"]),
+                    expires_at=r["expires_at"],
+                    refresh_token=r["refresh_token_encrypted"],
+                    refresh_status=RefreshStatus(r["refresh_status"]),
+                    last_used_at=r["last_used_at"],
+                    created_at=r["created_at"],
+                    updated_at=r["updated_at"],
+                )
+                for r in rows
+            ]
+    return _list
+
+
+async def make_vault_updater(pool):
+    async def _update(owner_id: str, vault_id: uuid.UUID, fields: dict[str, Any]) -> None:
+        if not fields:
+            return
+        set_clause = ", ".join(f"{k} = ${i + 3}" for i, k in enumerate(fields.keys()))
+        values = list(fields.values())
+        async with pool.acquire() as conn:
+            await conn.execute(
+                f"UPDATE vault_entries SET {set_clause} WHERE owner_id = $1 AND vault_id = $2",
+                owner_id, vault_id, *values,
+            )
+    return _update
+
+
+async def make_credential_access_writer():
+    import os
+
+    clickhouse_url = os.environ.get("CLICKHOUSE_URL", "http://default:nopassword@clickhouse:8123")
+
+    async def _write(event: dict[str, Any]) -> None:
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                await client.post(
+                    f"{clickhouse_url}/?query=INSERT%20INTO%20ra1_analytics.credential_access_events%20FORMAT%20JSONEachRow",
+                    json=[event],
+                )
+        except Exception:
+            pass
+    return _write

@@ -1,43 +1,144 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException
 from typing import Optional
 import uuid
+import os
 
-from app.services.orchestrator import OrchestratorService
+from app.core import db
 from app.core.atrs import ATRSService
-from app.services.input_engine import InputEngineService
-from app.services/context_assembler import ContextAssemblerService
-from app.services/model_engine import ModelEngineService
-from app.services/safety_engine import SafetyEngineService
-from app.services/output_engine import OutputEngineService
-from app.services/memory_engine import MemoryEngineService
+from app.services.vault import VaultService, make_vault_row_writer, make_vault_row_reader, make_vault_lister, make_vault_updater, make_credential_access_writer
+from app.models.vault import VaultEntryCreate, VaultEntryRead, CredentialType
+from app.services.memory_engine import MemoryEngineService
+from app.services.persona_engine import PersonaEngineService
+from app.services.search_engine import SearchEngineService
+from app.services.context_assembler import ContextAssemblerService
+from app.services.model_engine import ModelEngineService, make_model_reader
+from app.services.safety_engine import SafetyEngineService
+from app.services.output_engine import OutputEngineService
 from app.services.quality_gate import QualityGateService
+from app.services.notification_engine import NotificationEngineService
+from app.services.orchestrator import OrchestratorService
+from app.services.input_engine import InputEngineService
+from app.services import litellm_service
 
 router = APIRouter()
 
-def get_atrs() -> ATRSService:
-    return ATRSService()
+RA1_OWNER_ID = os.environ.get("RA1_OWNER_ID", "")
 
-def get_input_service(atrs: ATRSService = Depends(get_atrs)) -> InputEngineService:
-    return InputEngineService()
 
-def get_context_service(atrs: ATRSService = Depends(get_atrs)) -> ContextAssemblerService:
-    return ContextAssemblerService(atrs)
+def get_pool():
+    return db.get_pool()
 
-def get_model_service(atrs: ATRSService = Depends(get_atrs)) -> ModelEngineService:
-    return ModelEngineService(atrs)
+
+def get_atrs(pool=Depends(get_pool)) -> ATRSService:
+    async def _outbox_writer(row: dict) -> None:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO atrs_outbox (payload, created_at) VALUES ($1, NOW())",
+                row,
+            )
+    return ATRSService(outbox_writer=_outbox_writer)
+
+
+def get_vault_service(pool=Depends(get_pool), atrs: ATRSService = Depends(get_atrs)) -> VaultService:
+    row_writer = make_vault_row_writer(pool, atrs)
+    row_reader = make_vault_row_reader(pool)
+    lister = make_vault_lister(pool)
+    updater = make_vault_updater(pool)
+    cred_log = make_credential_access_writer()
+    return VaultService(
+        row_writer=row_writer,
+        row_reader=row_reader,
+        lister=lister,
+        updater=updater,
+        atrs=atrs,
+        credential_access_writer=cred_log,
+    )
+
+
+def get_memory_service(pool=Depends(get_pool), atrs: ATRSService = Depends(get_atrs)) -> MemoryEngineService:
+    return MemoryEngineService(
+        row_writer=None,
+        row_reader=None,
+        lister=None,
+        updater=None,
+        atrs=atrs,
+    )
+
+
+def get_persona_service(pool=Depends(get_pool), atrs: ATRSService = Depends(get_atrs)) -> PersonaEngineService:
+    return PersonaEngineService(
+        row_reader=None,
+        row_writer=None,
+        updater=None,
+        lister=None,
+        atrs=atrs,
+    )
+
+
+def get_search_service(memory_service: MemoryEngineService = Depends(get_memory_service), atrs: ATRSService = Depends(get_atrs)) -> SearchEngineService:
+    return SearchEngineService(
+        memory_lister=None,
+        knowledge_lister=None,
+        atrs=atrs,
+    )
+
+
+def get_context_service(
+    atrs: ATRSService = Depends(get_atrs),
+    memory_service: MemoryEngineService = Depends(get_memory_service),
+    search_service: SearchEngineService = Depends(get_search_service),
+    persona_service: PersonaEngineService = Depends(get_persona_service),
+) -> ContextAssemblerService:
+    return ContextAssemblerService(
+        atrs=atrs,
+        memory_lister=memory_service.list_for_scope,
+        search_engine=search_service.search,
+        persona_reader=persona_service.load_persona,
+    )
+
+
+def get_model_service(
+    pool=Depends(get_pool),
+    atrs: ATRSService = Depends(get_atrs),
+    vault_service: VaultService = Depends(get_vault_service),
+) -> ModelEngineService:
+    return ModelEngineService(
+        atrs=atrs,
+        vault_resolve=vault_service.resolve,
+        model_reader=make_model_reader(pool),
+        execute_fn=litellm_service.execute_chat_completion,
+        owner_id=RA1_OWNER_ID,
+    )
+
 
 def get_safety_service(atrs: ATRSService = Depends(get_atrs)) -> SafetyEngineService:
-    return SafetyEngineService(atrs)
+    return SafetyEngineService(atrs=atrs)
+
 
 def get_output_service(atrs: ATRSService = Depends(get_atrs)) -> OutputEngineService:
-    return OutputEngineService(atrs)
+    return OutputEngineService(atrs=atrs)
 
-def get_memory_service(atrs: ATRSService = Depends(get_atrs)) -> MemoryEngineService:
-    return MemoryEngineService(atrs)
 
 def get_gate_service(atrs: ATRSService = Depends(get_atrs)) -> QualityGateService:
-    return QualityGateService(atrs)
+    return QualityGateService(atrs=atrs)
+
+
+def get_notification_service(pool=Depends(get_pool), atrs: ATRSService = Depends(get_atrs)) -> NotificationEngineService:
+    return NotificationEngineService(
+        row_writer=None,
+        row_reader=None,
+        updater=None,
+        atrs=atrs,
+    )
+
+
+def get_input_service(atrs: ATRSService = Depends(get_atrs)) -> InputEngineService:
+    return InputEngineService(atrs=atrs)
+
+
+async def _noop_memory_committer(ctx: dict) -> None:
+    pass
+
 
 def get_orchestrator(
     atrs: ATRSService = Depends(get_atrs),
@@ -51,46 +152,29 @@ def get_orchestrator(
 ) -> OrchestratorService:
     return OrchestratorService(
         atrs=atrs,
-        input_normalizer=input_service.normalize_input,
+        input_normalizer=input_service.normalize,
         context_assembler=context_service.assemble,
         model_executor=model_service.execute,
-        safety_evaluator=safety_service.evaluate,
+        safety_evaluator=safety_service.evaluate_output,
         output_synthesizer=output_service.synthesize,
-        memory_committer=memory_service.commit,
+        memory_committer=_noop_memory_committer,
         gate_evaluator=gate_service.evaluate,
     )
 
-def get_current_user_id() -> str:
-    return "default-user"
 
 @router.post("/process")
 async def process_message(
     message: str,
-    user_id: str = Depends(get_current_user_id),
-    thread_id: Optional[str] = None,
-    habitat_id: Optional[str] = None,
     orchestrator: OrchestratorService = Depends(get_orchestrator),
 ):
     result = await orchestrator.process(
-        user_id=uuid.UUID(user_id),
+        user_id=uuid.UUID(RA1_OWNER_ID) if RA1_OWNER_ID else uuid.uuid4(),
         text=message,
-        session_id=uuid.UUID(thread_id) if thread_id else None,
-        habitat_id=uuid.UUID(habitat_id) if habitat_id else None,
+        session_id=None,
+        habitat_id=None,
     )
     return result.model_dump()
 
-@router.get("/stream")
-async def stream_response(
-    request: Request,
-    thread_id: str,
-    user_id: str = Depends(get_current_user_id),
-):
-    async def generate():
-        yield "data: {\"type\": \"start\", \"thread_id\": \"" + thread_id + "\"}\n\n"
-        yield "data: {\"type\": \"chunk\", \"content\": \"Hello\"}\n\n"
-        yield "data: {\"type\": \"end\"}\n\n"
-    
-    return StreamingResponse(generate(), media_type="text/event-stream")
 
 @router.get("/health")
 async def health():
