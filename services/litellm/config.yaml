@@ -1,10 +1,100 @@
-model_list: []
-
-litellm_settings:
-  drop_params: true
-  num_retries: 2
-  allowed_fails: 3
+# ── LiteLLM Proxy Config ──────────────────────────────────────────────────────
+# API keys are NOT hardcoded here.
+# Keys are pushed to LiteLLM at runtime via /model/update when a user or admin
+# stores them in Infisical. The backend service handles this automatically.
+# See: backend/app/services/litellm_service.py → update_models_for_provider()
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
+  store_model_in_db: true          # enables dynamic model add/update via API
+  allow_requests_on_db_unavailable: true
   allow_model_updates: true
+
+litellm_settings:
+  drop_params: true
+  num_retries: 3
+  retry_after: 2
+  request_timeout: 120
+  allowed_fails: 3
+  # Observability — all LLM calls flow through Langfuse
+  success_callback: ["langfuse"]
+  failure_callback: ["langfuse"]
+
+router_settings:
+  routing_strategy: "least-busy"
+  enable_pre_call_checks: true     # validates context window before sending
+  cooldown_time: 60                # seconds before retrying a failed model
+  enable_tag_filtering: true
+
+# ── Tier-based model list ─────────────────────────────────────────────────────
+# T3 = highest capability (reasoning, complex tasks)
+# T2 = balanced (coding, analysis)
+# T1 = standard (writing, general)
+# T0 = fast/free (quick Q&A, simple tasks)
+# Keys are injected at runtime — models listed here are activated when a key is stored.
+
+model_list:
+  - model_name: t3-model
+    litellm_params:
+      model: anthropic/claude-sonnet-4-20250514
+      api_key: os.environ/ANTHROPIC_API_KEY
+    model_info:
+      tier: T3
+
+  - model_name: t3-model
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: os.environ/OPENAI_API_KEY
+    model_info:
+      tier: T3
+
+  - model_name: t2-model
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+    model_info:
+      tier: T2
+
+  - model_name: t2-model
+    litellm_params:
+      model: gemini/gemini-2.5-pro
+      api_key: os.environ/GEMINI_API_KEY
+    model_info:
+      tier: T2
+
+  - model_name: t1-model
+    litellm_params:
+      model: gemini/gemini-2.5-flash
+      api_key: os.environ/GEMINI_API_KEY
+    model_info:
+      tier: T1
+
+  - model_name: t1-model
+    litellm_params:
+      model: groq/llama-3.3-70b-versatile
+      api_key: os.environ/GROQ_API_KEY
+    model_info:
+      tier: T1
+
+  - model_name: t0-model
+    litellm_params:
+      model: gemini/gemini-2.0-flash-lite
+      api_key: os.environ/GEMINI_API_KEY
+    model_info:
+      tier: T0
+
+  - model_name: t0-model
+    litellm_params:
+      model: groq/llama-3.1-8b-instant
+      api_key: os.environ/GROQ_API_KEY
+    model_info:
+      tier: T0
+
+router_settings:
+  fallbacks:
+    - {"t3-model": ["t2-model"]}
+    - {"t2-model": ["t1-model"]}
+    - {"t1-model": ["t0-model"]}
+  context_window_fallbacks:
+    - {"t3-model": ["t2-model", "t1-model"]}
+    - {"t2-model": ["t1-model", "t0-model"]}
