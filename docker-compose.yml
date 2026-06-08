@@ -118,6 +118,8 @@ services:
     volumes:
       - ./data/clickhouse:/var/lib/clickhouse
       - ./services/infra/clickhouse-init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./services/clickhouse/users.xml:/etc/clickhouse-server/users.d/default-password.xml
+
     healthcheck:
       test: ["CMD", "wget", "--spider", "http://127.0.0.1:8123/ping"]
       interval: 10s
@@ -221,7 +223,7 @@ services:
       - "4000:4000"
     volumes:
       - ./services/litellm/config.yaml:/app/config.yaml
-    command: ["litellm", "--config", "/app/config.yaml", "--host", "0.0.0.0"]
+    command: ["--config", "/app/config.yaml", "--host", "0.0.0.0"]
     environment:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
     depends_on:
@@ -250,10 +252,10 @@ services:
       NEXTAUTH_URL: http://localhost:3002
       TELEMETRY_ENABLED: "false"
       LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"
-      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
-      CLICKHOUSE_URL: http://clickhouse:8123
-      CLICKHOUSE_USER: clickhouse
-      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_MIGRATION_URL: clickhouse://default:nopassword@clickhouse:9000
+      CLICKHOUSE_URL: http://default:nopassword@clickhouse:8123
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: "nopassword"
       CLICKHOUSE_CLUSTER_ENABLED: "false"
       LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
       LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
@@ -289,13 +291,25 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-ra1}:${POSTGRES_PASSWORD}@postgres:5432/langfuse
       SALT: ${LANGFUSE_SALT}
-      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
-      CLICKHOUSE_URL: http://clickhouse:8123
-      CLICKHOUSE_USER: clickhouse
-      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_MIGRATION_URL: clickhouse://default:nopassword@clickhouse:9000
+      CLICKHOUSE_URL: http://default:nopassword@clickhouse:8123
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: "nopassword"
       REDIS_HOST: valkey
       REDIS_PORT: 6379
       REDIS_AUTH: ${VALKEY_PASSWORD}
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
     depends_on:
       postgres:
         condition: service_healthy
@@ -322,16 +336,21 @@ services:
       - ENV=development
       - POSTGRES_URL=postgresql://${POSTGRES_USER:-ra1}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ra1}
       - VALKEY_URL=redis://default:${VALKEY_PASSWORD}@valkey:6379
-      - INFISICAL_URL=http://infisical:8080
+      - INFISICAL_HOST=http://infisical:8080
+      - INFISICAL_PROJECT_ID=${INFISICAL_PROJECT_ID}
+      - INFISICAL_MACHINE_CLIENT_ID=${INFISICAL_MACHINE_CLIENT_ID}
+      - INFISICAL_MACHINE_CLIENT_SECRET=${INFISICAL_MACHINE_CLIENT_SECRET}
       - LITELLM_URL=http://litellm:4000
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
-      - CLICKHOUSE_URL=http://clickhouse:8123
+      - CLICKHOUSE_URL=http://default:nopassword@clickhouse:8123
     volumes:
       - ./backend/app:/app/app
     depends_on:
       postgres:
         condition: service_healthy
       valkey:
+        condition: service_healthy
+      infisical:
         condition: service_healthy
     networks:
       - ra1-network

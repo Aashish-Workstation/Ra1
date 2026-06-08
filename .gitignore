@@ -1,3 +1,16 @@
 data/
 .env
+.env.local
+.env.example
 services/librechat/librechat.yaml
+logs/
+*.log
+__pycache__/
+*.pyc
+*.pyo
+services/librechat/data-node/
+services/librechat/meili_data_v1.35.1/
+.kilo/
+*.swp
+*.swo
+*~
